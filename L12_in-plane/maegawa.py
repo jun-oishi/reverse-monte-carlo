@@ -6,6 +6,7 @@ import os
 import time
 import argparse
 import tqdm
+import re
 
 mpl.use("Agg")
 
@@ -94,6 +95,16 @@ class LPSO_RMCSetting:
         self.N_POINTS = self.EXP_Q.shape[0]
         sum = np.sum(data[(self.Q_MIN < self.EXP_Q) & (self.EXP_Q < self.Q_MAX), 1])
         self.EXP_IQ = data[:, 1] / sum  # 所定範囲の和で規格化
+
+    def loadConfig(self, src):
+        """初期配置を読み込む"""
+        data = np.loadtxt(src, skiprows=4, delimiter=",", dtype=int)
+        if data.shape[0] != self.N_CLUSTER:
+            raise ValueError("number of clusters is different")
+        if data[:,0].max() >= self.LX or data[:,1].max() >= self.LY:
+            raise ValueError("cluster position is out of range")
+        self.a, self.b = data[:, 0], data[:, 1]
+        self.x, self.y = self.ab2xy(self.a, self.b)
 
     def computeIq(self):
         """現在のクラスタ配置に基づいてI(q)を計算する"""
@@ -246,11 +257,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("src", type=str, help="path to experimental data")
     parser.add_argument(
-<<<<<<< HEAD
-        "-n", "--n_cluster", type=int, default=48, help="number of clusters"
-=======
         "-n", "--n_cluster", type=int, default=20, help="number of clusters (default 20)"
->>>>>>> 413d9e1 (Catch KeybordInterrupt to log in-progress result)
     )
     parser.add_argument("-x", "--lx", type=int, default=24, help="x size of lattice")
     parser.add_argument("-y", "--ly", type=int, default=24, help="y size of lattice")
@@ -258,7 +265,7 @@ if __name__ == "__main__":
         "-c", "--n_cycle", type=int, default=300, help="number of cycles"
     )
     parser.add_argument(
-        "-l", "--log_interval", type=int, default=1, help="log interval"
+        "-i", "--log_interval", type=int, default=1, help="log interval (default 1)"
     )
     parser.add_argument(
         "-d",
@@ -279,6 +286,9 @@ if __name__ == "__main__":
         default="data/result_" + time.strftime("%Y%m%d%H%M"),
         help="output directory",
     )
+    parser.add_argument(
+        "-l", "--load", type=str, default="", help="load initial configuration"
+    )
     parser.add_argument("-s", "--seed", type=int, default=1, help="random seed")
 
     args = parser.parse_args()
@@ -288,14 +298,18 @@ if __name__ == "__main__":
     n_cycle, log_interval = args.n_cycle, args.log_interval
     src, dist_dir = args.src, args.output
     overwrite, saveConfig = args.overwrite, args.detail_log
+    initial_config = args.load
 
     t_ini = time.time()
     rmc = LPSO_RMCSetting(n_cluster, Lx, Ly)
-    os.makedirs(dist_dir, exist_ok=overwrite)
-    rmc.saveConfig(dist_dir + "/initial_config.dat", overwrite=overwrite)
+    if initial_config:
+        rmc.loadConfig(initial_config)
     rmc.loadExpData(src)
     q = rmc.EXP_Q
     iq_before = rmc.computeIq()
+
+    os.makedirs(dist_dir, exist_ok=overwrite)
+    rmc.saveConfig(dist_dir + "/initial_config.dat", overwrite=overwrite)
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
     rmc.showScatter(axes[0, 0], title="cluster arrangement (before)")

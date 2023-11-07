@@ -183,25 +183,34 @@ class LPSO_RMCSetting:
 
         bar = tqdm.tqdm(total=n_cycle)
         bar.set_description("optimizing")
-        for i in range(1, n_cycle + 1):  # tqdmで進捗を表示
-            self.move()
-            new_iq = self.computeIq()
-            new_residual = self.residual(new_iq)
-            # new_residual->大で確率が小さくなるように
-            p = np.exp(-k * (new_residual - residual) / residual)
-            if np.random.uniform(0, 1) < p:
-                iq = new_iq
-                residual = new_residual
-            else:
-                self.undo()
-            if i % log_interval == 0:
-                residual_log[i // log_interval] = residual
-                log_cycle[i // log_interval] = i
-                if saveConfig:
-                    self.n_cycle = i
-                    self.time_run = time.time() - t_ini
-                    self.saveConfig(saveDir + f"/{i}cycle_config.dat")
-            bar.update(1)
+        i = 0
+        try:
+            for i in range(1, n_cycle + 1):  # tqdmで進捗を表示
+                self.move()
+                new_iq = self.computeIq()
+                new_residual = self.residual(new_iq)
+                # new_residual->大で確率が小さくなるように
+                p = np.exp(-k * (new_residual - residual) / residual)
+                if np.random.uniform(0, 1) < p:
+                    iq = new_iq
+                    residual = new_residual
+                else:
+                    self.undo()
+                if i % log_interval == 0:
+                    residual_log[i // log_interval] = residual
+                    log_cycle[i // log_interval] = i
+                    if saveConfig:
+                        self.n_cycle = i
+                        self.time_run = time.time() - t_ini
+                        self.saveConfig(saveDir + f"/{i}cycle_config.dat")
+                bar.update(1)
+        except KeyboardInterrupt:
+            print(f"interrupted at {i} cycle")
+            self.undo()
+            residual_log = residual_log[: i // log_interval + 1]
+            log_cycle = log_cycle[: i // log_interval + 1]
+            n_cycle = i-1
+
         # log_intervalによらず最後の値を入れる
         residual_log[-1] = residual
         log_cycle[-1] = n_cycle
@@ -237,7 +246,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("src", type=str, help="path to experimental data")
     parser.add_argument(
+<<<<<<< HEAD
         "-n", "--n_cluster", type=int, default=48, help="number of clusters"
+=======
+        "-n", "--n_cluster", type=int, default=20, help="number of clusters (default 20)"
+>>>>>>> 413d9e1 (Catch KeybordInterrupt to log in-progress result)
     )
     parser.add_argument("-x", "--lx", type=int, default=24, help="x size of lattice")
     parser.add_argument("-y", "--ly", type=int, default=24, help="y size of lattice")
@@ -292,9 +305,9 @@ if __name__ == "__main__":
     )
     iq_after = rmc.computeIq()
 
-    print(f"{n_cycle} cycles run in {time.time() - t_ini:.6f} [s]")
+    print(f"{rmc.n_cycle} cycles run in {time.time() - t_ini:.6f} [s]")
 
-    rmc.showScatter(axes[1, 0], title="cluster arrangement (after)")
+    rmc.showScatter(axes[1, 0], title="cluster arrangement (after {rmc.n_cycle} cycles)")
 
     ax = axes[0, 1]
     ax.semilogy(log_cycle, residual_log)
@@ -304,8 +317,8 @@ if __name__ == "__main__":
 
     ax = axes[1, 1]
     ax.plot(q, rmc.EXP_IQ, label="exp.")
-    ax.plot(q, iq_before, label="before")
-    ax.plot(q, iq_after, label="after")
+    ax.plot(q, iq_before, label=f"before")
+    ax.plot(q, iq_after, label="after {rmc.n_cycle} cycles")
     ax.axvline(rmc.Q_MIN, color="gray", linestyle="--")
     ax.axvline(rmc.Q_MAX, color="gray", linestyle="--")
     ax.set_title("SAXS profile")

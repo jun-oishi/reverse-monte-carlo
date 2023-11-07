@@ -9,23 +9,34 @@ import tqdm
 import re
 
 mpl.use("Agg")
+COS60 = np.cos(np.pi / 3)
+SIN60 = np.sin(np.pi / 3)
 
 
 class LPSO_RMCSetting:
     LATTICE_A = 0.321  # for alpha-Mg [nm]
     CLUSTER_R = 0.355  # for L12 cluster [nm]
+    CLUSTER_D_SQ = (CLUSTER_R * 2)**2  # [nm^2]
     Q_MIN = 4.5  # 規格化、評価に使う最小のq[nm^-1]
     Q_MAX = 7.5  # 規格化、評価に使う最大のq[nm^-1]
     CLUSTER_MAX_DENSITY = 1 / 12  # クラスタの最大密度
+    A_STEP = (1, 0, -1, -1, 0, 1)  # 1ステップでのa軸方向の移動
+    B_STEP = (0, 1, 1, 0, -1, -1)  # 1ステップでのb軸方向の移動
+    KP = 100 # 残差が増える遷移の許容確率のパラメタ(大きいほど許容確率を下げる)
 
     def __init__(self, n_cluster, Lx, Ly):
         self.N_CLUSTER = n_cluster
         self.LX = Lx
         self.LY = Ly
+        # overlapの判定に使う
+        self.Lax = self.LX * self.LATTICE_A # a軸周期ずれのx幅
+        self.Lbx = self.LY * self.LATTICE_A * COS60 # b軸周期ずれのx幅
+        self.Lby = self.LY * self.LATTICE_A * SIN60 # b軸周期ずれのy幅
         if n_cluster > self.LX * self.LY * self.CLUSTER_MAX_DENSITY:
             raise ValueError("too many clusters")
 
         self.a, self.b = np.empty(n_cluster, dtype=int), np.empty(n_cluster, dtype=int)
+        self.x, self.y = np.empty(n_cluster), np.empty(n_cluster)
 
         failure = True
         for i in range(10):
@@ -37,8 +48,6 @@ class LPSO_RMCSetting:
                 continue
         if failure:
             raise RuntimeError("random initialization failed")
-        # x//aとしてxy直交座標の成分を計算
-        self.x, self.y = self.ab2xy(self.a, self.b)
         self.n_cycle = 0
         self.time_run = 0.0
 
@@ -55,38 +64,41 @@ class LPSO_RMCSetting:
             if count == self.LX * self.LY:
                 raise RuntimeError("random initialization failed")
             self.a[i], self.b[i] = a, b
+            self.x[i], self.y[i] = self.ab2xy(a, b)
             bar.update(1)
         return
 
     def ab2xy(self, a, b):
         """格子座標系の座標a,bをxy直交座標系の座標に変換する"""
-        x = (a + b * 0.5) * self.LATTICE_A  # x座標[nm]
-        y = b * np.sqrt(3) / 2 * self.LATTICE_A  # y座標[nm]
+        x = (a + b * COS60) * self.LATTICE_A  # x座標[nm]
+        y = b * SIN60 * self.LATTICE_A  # y座標[nm]
         return x, y
 
     def is_overlap(self, a:int, b:int, *, i_ini:int=0, i_fin:int=-1) -> bool:
         """添え字iからj-1までのクラスタと重なりがあるか判定する"""
-        i_fin = i_fin if i_fin>=0 else self.N_CLUSTER
-        if i_ini > self.N_CLUSTER:
-            raise ValueError("too large i_ini")
+        i_fin = self.N_CLUSTER if i_fin < 0 else i_fin
         if i_ini == i_fin:
             return False
-        size = 4 # クラスタのサイズ(直径相当)
-        # 周期ずれを考えて論理和をとる
-        a_lap = (
-            (np.abs(self.a[i_ini:i_fin] - a - self.LX) < size)
-            + (np.abs(self.a[i_ini:i_fin] - a) < size)
-            + (np.abs(self.a[i_ini:i_fin] - a + self.LX) < size)
-        )
-        if not any(a_lap):
-            return False
-        # aとbの論理積をとる(同じ添え字でabともTrueならTrue)
-        ab_lap = (
-            (a_lap * (np.abs(self.b[i_ini:i_fin] - b - self.LY) < size))
-            + (a_lap * (np.abs(self.b[i_ini:i_fin] - b) < size))
-            + (a_lap * (np.abs(self.b[i_ini:i_fin] - b + self.LY) < size))
-        )
-        return np.any(ab_lap)
+        x, y = self.ab2xy(a, b)
+        arr_x = self.x[i_ini:i_fin]
+        arr_y = self.y[i_ini:i_fin]
+        arr_x = np.concatenate([
+            arr_x-self.Lax+self.Lbx, arr_x+self.Lbx, arr_x+self.Lax+self.Lbx,
+            arr_x-self.Lax, arr_x, arr_x+self.Lax,
+            arr_x-self.Lax-self.Lbx, arr_x-self.Lbx, arr_x+self.Lax-self.Lbx
+        ])
+        arr_y = np.concatenate([
+            arr_y+self.Lby, arr_y+self.Lby, arr_y+self.Lby,
+            arr_y, arr_y, arr_y,
+            arr_y-self.Lby, arr_y-self.Lby, arr_y-self.Lby
+        ])
+        # 以下4行はあってもなくても結果は同じでn_cluster=48だと速度もほぼ同じ(n大だとあったほうが速い?)
+        # x_filter = (-2*self.CLUSTER_R<=arr_x) * (arr_x < self.Lax+2*self.CLUSTER_R)
+        # y_filter = (-2*self.CLUSTER_R<=arr_y) * (arr_y < self.Lby+2*self.CLUSTER_R)
+        # arr_x = arr_x[x_filter*y_filter]
+        # arr_y = arr_y[x_filter*y_filter]
+        overlap = (arr_x-x)**2 + (arr_y-y)**2 < self.CLUSTER_D_SQ
+        return np.any(overlap)
 
     def loadExpData(self, src):
         """実験データを読み込む"""
@@ -109,7 +121,7 @@ class LPSO_RMCSetting:
     def computeIq(self):
         """現在のクラスタ配置に基づいてI(q)を計算する"""
         n = 180  # クラスタの向きを平均するための分割数
-        iq = np.empty(self.N_POINTS)
+        iq = np.empty_like(self.EXP_Q)
 
         # 各原子の位置ベクトル shape=(n_cluster)
         rv = self.x + 1j * self.y
@@ -118,6 +130,7 @@ class LPSO_RMCSetting:
             np.exp(1j * np.linspace(0, 2 * np.pi, n, endpoint=False))
         )  # shape=(n,)
         qv = np.outer(mq, rotate)  # shape=(n_points,n)
+        # f[i,j,k]:i番目のクラスタのj番目のq、k番目の方向における複素振幅
         f = np.array(
             [np.exp(1j * (r * qv.conjugate()).real) for r in rv]
         )  # shape=(n_cluster,n_points,n)
@@ -138,24 +151,8 @@ class LPSO_RMCSetting:
         i = np.random.randint(0, self.N_CLUSTER)
         new_a, new_b = self.a[i], self.b[i]
         direction = np.random.randint(0, 6)
-        if direction == 0:
-            new_a += 1
-            new_b += 0
-        elif direction == 1:
-            new_a += 0
-            new_b += 1
-        elif direction == 2:
-            new_a += -1
-            new_b += 1
-        elif direction == 3:
-            new_a += -1
-            new_b += 0
-        elif direction == 4:
-            new_a += 0
-            new_b += -1
-        elif direction == 5:
-            new_a += 1
-            new_b += -1
+        new_a += self.A_STEP[direction]
+        new_b += self.B_STEP[direction]
         new_a = new_a % self.LX
         new_b = new_b % self.LY
 
@@ -181,7 +178,6 @@ class LPSO_RMCSetting:
         log_intervalで指定した回数ごとにlogを取る
         最初と最後の値は必ず入る
         """
-        k = 1000  # 残差が増える遷移の許容確率のパラメタ(大きいほど許容確率を下げる)
         t_ini = time.time()
         iq = self.computeIq()
         residual = self.residual(iq)
@@ -201,7 +197,7 @@ class LPSO_RMCSetting:
                 new_iq = self.computeIq()
                 new_residual = self.residual(new_iq)
                 # new_residual->大で確率が小さくなるように
-                p = np.exp(-k * (new_residual - residual) / residual)
+                p = np.exp(-self.KP * (new_residual - residual) / residual)
                 if np.random.uniform(0, 1) < p:
                     iq = new_iq
                     residual = new_residual
@@ -257,7 +253,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("src", type=str, help="path to experimental data")
     parser.add_argument(
-        "-n", "--n_cluster", type=int, default=20, help="number of clusters (default 20)"
+        "-n", "--n_cluster", type=int, default=20, help="number of clusters (default 48)"
     )
     parser.add_argument("-x", "--lx", type=int, default=24, help="x size of lattice")
     parser.add_argument("-y", "--ly", type=int, default=24, help="y size of lattice")
@@ -321,7 +317,7 @@ if __name__ == "__main__":
 
     print(f"{rmc.n_cycle} cycles run in {time.time() - t_ini:.6f} [s]")
 
-    rmc.showScatter(axes[1, 0], title="cluster arrangement (after {rmc.n_cycle} cycles)")
+    rmc.showScatter(axes[1, 0], title=f"cluster arrangement (after {rmc.n_cycle} cycles)")
 
     ax = axes[0, 1]
     ax.semilogy(log_cycle, residual_log)
@@ -331,8 +327,8 @@ if __name__ == "__main__":
 
     ax = axes[1, 1]
     ax.plot(q, rmc.EXP_IQ, label="exp.")
-    ax.plot(q, iq_before, label=f"before")
-    ax.plot(q, iq_after, label="after {rmc.n_cycle} cycles")
+    ax.plot(q, iq_before, label="before")
+    ax.plot(q, iq_after, label=f"after {rmc.n_cycle} cycles")
     ax.axvline(rmc.Q_MIN, color="gray", linestyle="--")
     ax.axvline(rmc.Q_MAX, color="gray", linestyle="--")
     ax.set_title("SAXS profile")

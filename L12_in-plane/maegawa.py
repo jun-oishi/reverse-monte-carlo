@@ -18,7 +18,6 @@ class LPSO_RMCSetting:
     CLUSTER_MAX_DENSITY = 1 / 12  # クラスタの最大密度
 
     def __init__(self, n_cluster, Lx, Ly):
-        t_ini = time.time()
         self.N_CLUSTER = n_cluster
         self.LX = Lx
         self.LY = Ly
@@ -26,27 +25,67 @@ class LPSO_RMCSetting:
             raise ValueError("too many clusters")
 
         self.a, self.b = np.empty(n_cluster, dtype=int), np.empty(n_cluster, dtype=int)
-        self.config()
+
+        failure = True
+        for i in range(10):
+            try:
+                self.config()
+                failure = False
+                break
+            except RuntimeError:
+                continue
+        if failure:
+            raise RuntimeError("random initialization failed")
         # x//aとしてxy直交座標の成分を計算
         self.x, self.y = self.ab2xy(self.a, self.b)
         self.n_cycle = 0
         self.time_run = 0.0
 
-    def config(self, i_ini=0):
+    def config(self):
         """クラスタの初期配置を決定する"""
-        self.a[i_ini:] = np.random.randint(0, self.LX, (self.N_CLUSTER - i_ini,))
-        self.b[i_ini:] = np.random.randint(0, self.LY, (self.N_CLUSTER - i_ini,))
-        for i in range(self.N_CLUSTER):
-            if (self.a[i], self.b[i]) in zip(self.a[:i], self.b[:i]):
-                # 重なる場合はやり直し
-                self.config(i_ini=i)
-                return
+        bar = tqdm.tqdm(total=self.N_CLUSTER)
+        bar.set_description("initializing")
+        for i in range(0, self.N_CLUSTER):
+            a, b = np.random.randint(0, self.LX), np.random.randint(0, self.LY)
+            count = 0
+            while self.is_overlap(a, b, i_fin=i) and count < self.LX * self.LY:
+                count += 1
+                a, b = np.random.randint(0, self.LX), np.random.randint(0, self.LY)
+            if count == self.LX * self.LY:
+                raise RuntimeError("random initialization failed")
+            self.a[i], self.b[i] = a, b
+            bar.update(1)
+        return
 
     def ab2xy(self, a, b):
         """格子座標系の座標a,bをxy直交座標系の座標に変換する"""
         x = (a + b * 0.5) * self.LATTICE_A  # x座標[nm]
         y = b * np.sqrt(3) / 2 * self.LATTICE_A  # y座標[nm]
         return x, y
+
+    def is_overlap(self, a:int, b:int, *, i_ini:int=0, i_fin:int=-1) -> bool:
+        """添え字iからj-1までのクラスタと重なりがあるか判定する"""
+        i_fin = i_fin if i_fin>=0 else self.N_CLUSTER
+        if i_ini > self.N_CLUSTER:
+            raise ValueError("too large i_ini")
+        if i_ini == i_fin:
+            return False
+        size = 4 # クラスタのサイズ(直径相当)
+        # 周期ずれを考えて論理和をとる
+        a_lap = (
+            (np.abs(self.a[i_ini:i_fin] - a - self.LX) < size)
+            + (np.abs(self.a[i_ini:i_fin] - a) < size)
+            + (np.abs(self.a[i_ini:i_fin] - a + self.LX) < size)
+        )
+        if not any(a_lap):
+            return False
+        # aとbの論理積をとる(同じ添え字でabともTrueならTrue)
+        ab_lap = (
+            (a_lap * (np.abs(self.b[i_ini:i_fin] - b - self.LY) < size))
+            + (a_lap * (np.abs(self.b[i_ini:i_fin] - b) < size))
+            + (a_lap * (np.abs(self.b[i_ini:i_fin] - b + self.LY) < size))
+        )
+        return np.any(ab_lap)
 
     def loadExpData(self, src):
         """実験データを読み込む"""
@@ -109,7 +148,7 @@ class LPSO_RMCSetting:
         new_a = new_a % self.LX
         new_b = new_b % self.LY
 
-        if (new_a, new_b) in zip(self.a, self.b):
+        if self.is_overlap(new_a, new_b, i_fin=i) or self.is_overlap(new_a, new_b, i_ini=i+1):
             # 重なる場合はやり直し
             self.move()
         else:
@@ -142,7 +181,9 @@ class LPSO_RMCSetting:
         residual_log[0] = residual
         log_cycle[0] = 0
 
-        for i in tqdm.tqdm(range(1, n_cycle + 1)):  # tqdmで進捗を表示
+        bar = tqdm.tqdm(total=n_cycle)
+        bar.set_description("optimizing")
+        for i in range(1, n_cycle + 1):  # tqdmで進捗を表示
             self.move()
             new_iq = self.computeIq()
             new_residual = self.residual(new_iq)
@@ -160,6 +201,7 @@ class LPSO_RMCSetting:
                     self.n_cycle = i
                     self.time_run = time.time() - t_ini
                     self.saveConfig(saveDir + f"/{i}cycle_config.dat")
+            bar.update(1)
         # log_intervalによらず最後の値を入れる
         residual_log[-1] = residual
         log_cycle[-1] = n_cycle
@@ -233,10 +275,10 @@ if __name__ == "__main__":
     n_cycle, log_interval = args.n_cycle, args.log_interval
     src, dist_dir = args.src, args.output
     overwrite, saveConfig = args.overwrite, args.detail_log
-    os.makedirs(dist_dir, exist_ok=overwrite)
 
     t_ini = time.time()
     rmc = LPSO_RMCSetting(n_cluster, Lx, Ly)
+    os.makedirs(dist_dir, exist_ok=overwrite)
     rmc.saveConfig(dist_dir + "/initial_config.dat", overwrite=overwrite)
     rmc.loadExpData(src)
     q = rmc.EXP_Q

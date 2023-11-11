@@ -1,11 +1,21 @@
 
 CPPC = g++-11
-CPPFLAGS = -std=c++20 -Wall -O3 -march=native -I./include
+CPPFLAGS = -std=c++20 -Wall -march=native -I./include -I/usr/include/eigen3
+ASPYLIB = -shared -fPIC $(shell python3 -m pybind11 --includes)
+PYLIBEXT = $(shell python3.11-config --extension-suffix)
 LDFLAGS = -lstdc++ -lm
-DST = bin
+SRC = src
+PYLIB = lib
+BIN = bin
+INCLUDE = include
+
 
 clean:
-	rm -rf $(DST)/*
+	rm -rf $(PYLIB)/* $(BIN)/*
 
-main: main.cpp include/*.hpp
-	$(CPPC) $(CPPFLAGS) $< -o $(DST)/$@ $(LDFLAGS)
+test: $(SRC)/test.cpp $(INCLUDE)/*.hpp
+	$(CPPC) $(CPPFLAGS) $< -o $(BIN)/$@ $(LDFLAGS)
+	$(BIN)/$@
+
+compute: $(SRC)/compute.cpp $(INCLUDE)/compute.hpp
+	$(CPPC) $(CPPFLAGS) $(ASPYLIB) $< -o $(PYLIB)/$@$(PYLIBEXT) $(LDFLAGS)
